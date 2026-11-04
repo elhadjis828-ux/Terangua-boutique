@@ -1,49 +1,31 @@
 /* ===== BASE DE DONNÉES (IndexedDB) =====
    Remplace localStorage : plus de limite de 5 Mo, écriture non bloquante,
    migration automatique des anciennes données. */
-/* ===== BASE DE DONNÉES (serveur PostgreSQL via l'API) ===== */
 const DB = (() => {
-  const ver = {};
-  let next = null,
-    chain = Promise.resolve();
-  const url = (k) => "/api/state/" + k;
-  const send = async () => {
-    if (!next) return; // une sauvegarde plus récente a déjà été envoyée
-    const { k, v } = next;
-    next = null;
-    const r = await fetch(url(k), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: v, version: ver[k] || 0 }),
-    });
-    if (r.status === 409) {
-      alert(
-        "Les données ont été modifiées depuis un autre poste. La page va se recharger.",
-      );
-      return location.reload();
-    }
-    if (!r.ok) throw new Error("Serveur : erreur " + r.status);
-    ver[k] = (await r.json()).version;
-  };
+  let db;
   return {
-    open: async () => {
-      const r = await fetch("/api/health");
-      if (!r.ok) throw new Error("Base de données indisponible");
-    },
-    get: async (k) => {
-      const r = await fetch(url(k));
-      if (r.status === 404) return ((ver[k] = 0), undefined);
-      if (!r.ok) throw new Error("Serveur : erreur " + r.status);
-      const j = await r.json();
-      ver[k] = j.version;
-      return j.data;
-    },
-    // les enregistrements sont envoyés l'un après l'autre (jamais en même temps)
-    set: (k, v) => {
-      next = { k, v };
-      chain = chain.then(send);
-      return chain;
-    },
+    open: () =>
+      new Promise((res, rej) => {
+        if (!window.indexedDB) return rej(new Error("IndexedDB indisponible"));
+        const r = indexedDB.open("stockmaster", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("kv");
+        r.onsuccess = () => ((db = r.result), res());
+        r.onerror = () => rej(r.error);
+      }),
+    get: (k) =>
+      new Promise((res, rej) => {
+        const q = db.transaction("kv", "readonly").objectStore("kv").get(k);
+        q.onsuccess = () => res(q.result);
+        q.onerror = () => rej(q.error);
+      }),
+    set: (k, v) =>
+      new Promise((res, rej) => {
+        const t = db.transaction("kv", "readwrite");
+        t.objectStore("kv").put(v, k);
+        t.oncomplete = () => res();
+        t.onerror = () => rej(t.error);
+        t.onabort = () => rej(t.error);
+      }),
   };
 })();
 
